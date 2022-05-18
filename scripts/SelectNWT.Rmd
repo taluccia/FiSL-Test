@@ -1,0 +1,40 @@
+---
+title: "Select NWT"
+author: "Anna Talucci"
+date: '2022-05-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+This script selects the Northwest Territory Boundary.
+
+# Packages
+
+```{r}
+library(rgeos)
+library(sf)
+library(tidyverse)
+```
+
+# Data
+
+```{r}
+data = st_read("../data/CanadianBoundaries/gpr_000b11a_e.shp", "gpr_000b11a_e")
+```
+
+```{r}
+data
+```
+
+```{r}
+nwt = data %>% filter(PREABBR=="N.W.T.")
+```
+
+```{r}
+
+st_write(nwt, "../outputs/NWTBoundary.shp", driver="ESRI shapefile")
+```

@@ -1,0 +1,292 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Overview
+
+
+# Packages
+
+```{r}
+library(sf)
+library(sp)
+library(gstat)
+library(tidyverse)
+library(lubridate)
+library(stars)
+library(raster)
+```
+
+# Data
+
+```{r}
+data = read.csv("../data/dayofburn_2014.csv")
+```
+
+```{r}
+head(data)
+```
+
+```{r}
+ggplot(data, aes(x=latitude, y=longitude, color=constant)) +
+  geom_point()
+```
+
+# Copied code
+```{r}
+library(gstat)
+library(sp)
+library(rgdal)
+library(raster)
+library(rgeos)
+#library(data.table)
+library(dplyr)
+library(tidyr)
+
+##Because of the length of time this script takes to run, I used a bash loop to simultaneously run
+##all the years on slurm, which is what this args bit is about. You could also adjust to make it a 
+##loop through the years but that would probably take more than a week to run.
+```
+
+```{r}
+args <- commandArgs(trailingOnly = T)
+y = args
+print(y)
+
+#leadpath = '/Users/scooperdock/Documents/Combustion/data/'
+```
+```{r}
+args
+
+```
+
+```{r}
+#years = c(2001:2017)
+
+
+#Set up a krigging statistics data frame
+values = data.frame()
+#Read in day of burn csv and shapefile for year
+burn_df = read.csv("../data/dayofburn_2014.csv")
+burn_shp = readOGR(dsn ="../data/NWTSubsetFireperimeters/NWT10SampleFires2014.shp", "NWT10SampleFires2014")
+```
+
+```{r}
+burn_df = separate(burn_df,'system.index',c('fireID','point'),sep='_')
+#Get unique fire IDs, arrange by min fire date and loop through
+fireIDs = arrange(burn_shp@data,desc(MinFireDat))
+fireIDs = fireIDs$FireID
+fireIDs = fireIDs[fireIDs %in% unique(burn_df$fireID)]
+print(paste0('# of fires: ',length(fireIDs)))
+num=1
+```
+
+```{r}
+for (ID in fireIDs){
+  print(ID)
+  print(num)
+  num=num+1
+  #Take each fire
+  temp_df = burn_df[burn_df$fireID==ID,]
+  temp_shp = burn_shp[burn_shp$FireID==ID,]
+  #determine if a polygon is a hole and calculate area in square km
+  holes = vector(length = length(temp_shp@polygons[[1]]@Polygons))
+  areas = vector(length = length(holes))
+  for(p in 1:length(holes)){
+    holes[p] = temp_shp@polygons[[1]]@Polygons[[p]]@hole
+    areas[p] = temp_shp@polygons[[1]]@Polygons[[p]]@area*(cos(temp_shp@polygons[[1]]@Polygons[[p]]@labpt[2]*pi/180)*111.32*111.32)
+  }
+  ##Remove holes
+  temp_shp@polygons[[1]]@Polygons = temp_shp@polygons[[1]]@Polygons[holes==FALSE]
+  ##Remove polygons with areas less than 1/16 square km (250m modis pixel)
+  areas = areas[holes==FALSE]
+  areas = areas>(1/16)
+  temp_shp@polygons[[1]]@Polygons = temp_shp@polygons[[1]]@Polygons[areas]
+  #Create a grid for each fire
+  lat_min = min(temp_df$latitude)
+  lat_max = max(temp_df$latitude)
+  long_min = min(temp_df$longitude)
+  long_max = max(temp_df$longitude)
+  #Create a grid of points at right scale
+  while(lat_min>temp_shp@bbox[2,1]){
+    lat_min = lat_min - (0.004)
+  }
+  while(lat_max<temp_shp@bbox[2,2]){
+    lat_max = lat_max + (0.004)
+  }
+  while(long_min>temp_shp@bbox[1,1]){
+    long_min = long_min - (0.004)
+  }
+  while(long_max<temp_shp@bbox[1,2]){
+    long_max = long_max + (0.004)
+  }
+  temp_grid = data.frame()
+  for (i in seq(lat_min,lat_max,(0.004))){
+    temp_grid = rbind(temp_grid,cbind(i,seq(long_min,long_max,(0.004))))
+  }
+  colnames(temp_grid) = c('latitude','longitude')
+  #Convert the grid to spatial points which match up with sample points
+  temp_grid_sp = SpatialPoints(data.frame(temp_grid$longitude,temp_grid$latitude),
+                               proj4string = temp_shp@proj4string)
+  if(length(temp_shp@polygons[[1]]@Polygons)==1){
+    
+    #Clip grid by shapefile
+    temp_grid_sp = gIntersection(temp_grid_sp,temp_shp)
+    
+    if(!is.na(var(temp_df$constant))&var(temp_df$constant)!=0){ #If there is variance in the data, perform the fit
+      temp_sp = SpatialPointsDataFrame(data.frame(temp_df$longitude,temp_df$latitude),data.frame(temp_df$constant),
+                                       proj4string = temp_shp@proj4string)
+      temp_var = variogram(temp_df.constant~1,temp_sp)
+      if(!is.null(temp_var)&&nrow(temp_var)){
+        temp_fit = fit.variogram(temp_var,vgm('Sph'))
+        
+        if(temp_fit$range[2]<=0){ #If the range is 0 or less, set the value to the minimum value recorded
+          values[ID,'MinFireDate'] = min(unique(temp_df$constant))
+          values[ID,'avg_SE'] = -1
+          df = data.frame(rep(as.double(min(unique(temp_df$constant))),length(temp_grid_sp)),-1)#,ID)
+          colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+          dimnames(temp_grid_sp@coords) = list(rownames(df),c('longitude','latitude'))
+           
+          if(exists('point_values')){
+            point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string))
+          }else{
+            point_values = SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string)
+          }
+        }else{ #If range is more than zero, use the fit values
+          values[ID,'Nugget'] = temp_fit$psill[1]
+          values[ID,'Range'] = temp_fit$range[2]
+          values[ID,'Sill'] = temp_fit$psill[1]+temp_fit$psill[2]
+          krigged = krige(temp_df.constant~1,temp_sp,temp_grid_sp,model = temp_fit)
+          values[ID,'avg_SE'] = mean(sqrt(krigged$var1.var))
+          df = data.frame(krigged$var1.pred,sqrt(krigged$var1.var))
+          colnames(df) = c('day_of_burn','SE')
+          coords = krigged@coords
+          colnames(coords) = c('longitude','latitude')
+           
+          if(exists('point_values')){
+            point_values = rbind(point_values,SpatialPointsDataFrame(coords,data = df,proj4string = temp_shp@proj4string))
+          }else{
+            point_values = SpatialPointsDataFrame(coords,data = df,proj4string = temp_shp@proj4string)
+          }
+        }
+      }else{
+        values[ID,'MinFireDate'] = min(temp_df$constant)
+        values[ID,'avg_SE'] = -2
+        df = data.frame(rep(as.double(min(temp_df$constant)),length(temp_grid_sp)),-2)#,ID)
+        colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+        dimnames(temp_grid_sp@coords) = list(rownames(df),c('longitude','latitude'))
+        if(exists('point_values')){
+          point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string))
+        }else{
+          point_values = SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string)
+        }
+      }
+    }else{ #If there is no variance in the data, then the value is just the value
+      values[ID,'MinFireDate'] = unique(temp_df$constant)
+      values[ID,'avg_SE'] = 0
+      df = data.frame(rep(as.double(unique(temp_df$constant)),length(temp_grid_sp)),0)#,ID)
+      colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+      dimnames(temp_grid_sp@coords) = list(rownames(df),c('longitude','latitude'))
+      if(exists('point_values')){
+        point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string))
+      }else{
+        point_values = SpatialPointsDataFrame(temp_grid_sp@coords,data = df,proj4string = temp_shp@proj4string)
+      }
+    }
+    
+  }else{
+    for(p in 1:length(temp_shp@polygons[[1]]@Polygons)){
+      temp_shp_sub = temp_shp
+      temp_shp_sub@polygons[[1]]@Polygons = temp_shp@polygons[[1]]@Polygons[p]
+      #Clip grid by shapefile
+      temp_grid_sp_sub = gIntersection(temp_grid_sp,temp_shp_sub)
+      temp_sp = SpatialPointsDataFrame(data.frame(temp_df$longitude,temp_df$latitude),data.frame(temp_df$constant),
+                                       proj4string = temp_shp@proj4string)
+      if(length(temp_grid_sp_sub)>0){
+        
+        if(length(temp_sp)==1){
+          value = temp_sp@data
+          temp_sp = gIntersection(temp_sp,temp_shp_sub)
+          if(length(temp_sp)>0){
+            temp_sp = SpatialPointsDataFrame(temp_sp@coords,data.frame(value),proj4string = temp_shp@proj4string)
+          }
+        }else{
+          temp_sp = raster::intersect(temp_sp,temp_shp_sub)
+        }
+       
+        if(length(temp_sp)>0){
+          if(!is.na(var(temp_sp@data$temp_df.constant))&var(temp_sp@data$temp_df.constant)!=0){ #If there is variance in the data, perform the fit
+            
+            temp_var = variogram(temp_df.constant~1,temp_sp)
+            if(!is.null(temp_var)&&nrow(temp_var)>1){
+              temp_fit = fit.variogram(temp_var,vgm('Sph'))
+              
+              if(temp_fit$range[2]<=0){ #If the range is 0 or less, set the value to the minimum value recorded
+                values[paste0(ID,'_',p),'MinFireDate'] = min(unique(temp_sp@data$temp_df.constant))
+                values[paste0(ID,'_',p),'avg_SE'] = -1
+                df = data.frame(rep(as.double(min(unique(temp_sp@data$temp_df.constant))),length(temp_grid_sp_sub)),-1)#,ID)
+                colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+                dimnames(temp_grid_sp_sub@coords) = list(rownames(df),c('longitude','latitude'))
+                 
+                if(exists('point_values')){
+                  point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string))
+                }else{
+                  point_values = SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string)
+                }
+              }else{ #If range is more than zero, use the fit values
+                values[paste0(ID,'_',p),'Nugget'] = temp_fit$psill[1]
+                values[paste0(ID,'_',p),'Range'] = temp_fit$range[2]
+                values[paste0(ID,'_',p),'Sill'] = temp_fit$psill[1]+temp_fit$psill[2]
+                krigged = krige(temp_df.constant~1,temp_sp,temp_grid_sp_sub,model = temp_fit)
+                values[paste0(ID,'_',p),'avg_SE'] = mean(sqrt(krigged$var1.var))
+               
+                df = data.frame(krigged$var1.pred,sqrt(krigged$var1.var))#,ID)
+                colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+                coords = krigged@coords
+                colnames(coords) = c('longitude','latitude')
+                 
+                if(exists('point_values')){
+                  point_values = rbind(point_values,SpatialPointsDataFrame(coords,data = df,proj4string = temp_shp@proj4string))
+                }else{
+                  point_values = SpatialPointsDataFrame(coords,data = df,proj4string = temp_shp@proj4string)
+                }
+              }
+              
+              
+            }else{
+              values[paste0(ID,'_',p),'MinFireDate'] = min(temp_sp@data$temp_df.constant)
+              values[paste0(ID,'_',p),'avg_SE'] = -2
+              df = data.frame(rep(as.double(min(temp_sp@data$temp_df.constant)),length(temp_grid_sp_sub)),-2)#,ID)
+              colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+              dimnames(temp_grid_sp_sub@coords) = list(rownames(df),c('longitude','latitude'))
+              if(exists('point_values')){
+                point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string))
+              }else{
+                point_values = SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string)
+              }
+            }
+          }else{ #If there is no variance in the data, then the value is just the value
+            values[paste0(ID,'_',p),'MinFireDate'] = unique(temp_sp@data$temp_df.constant)
+            values[paste0(ID,'_',p),'avg_SE'] = 0
+            df = data.frame(rep(as.double(unique(temp_sp@data$temp_df.constant)),length(temp_grid_sp_sub)),0)#,ID)
+            colnames(df) = c('day_of_burn','SE')#,'Fire_ID')
+            dimnames(temp_grid_sp_sub@coords) = list(rownames(df),c('longitude','latitude'))
+             if(exists('point_values')){
+              point_values = rbind(point_values,SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string))
+            }else{
+              point_values = SpatialPointsDataFrame(temp_grid_sp_sub@coords,data = df,proj4string = temp_shp@proj4string)
+            }
+          }
+          
+        }
+      }
+    }
+  }
+}
+
+writeOGR(point_values,paste0('../outputs/point_values_500m_',y,'.shp'),layer = 'DOB',driver = 'ESRI Shapefile',overwrite_layer = TRUE)
+
+print(y)
+```
+

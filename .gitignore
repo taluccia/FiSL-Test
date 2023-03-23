@@ -38,6 +38,10 @@ rsconnect/
 
 # For Mac users computer specific files
 **/.DS_Store
+**/._.DS_Store
+**/._FiSL-Test.Rproj
+**/._LICENSE
+**/scripts/._SelectSubsetFirePerimetersTest.Rmd
 
 # exclude specific folders from push to github
 figures/*

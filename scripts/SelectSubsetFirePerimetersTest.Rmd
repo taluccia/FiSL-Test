@@ -1,0 +1,80 @@
+---
+title: "Select Fire perimeters for test"
+author: "Anna Talucci"
+date: '2022-05-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+This script selects the Northwest Territory Boundary.
+
+# Packages
+
+```{r}
+library(rgeos)
+library(sf)
+library(tidyverse)
+```
+
+# Data
+
+```{r}
+data = st_read("../data/NBAC/nbac_2014_r9_20210810/nbac_2014_r9_20210810.shp", "nbac_2014_r9_20210810")
+```
+
+```{r}
+data
+```
+
+```{r}
+set.seed(123)
+sample10 = data %>% dplyr::filter(POLY_HA>500) %>% sample_n(., 10)
+sample10
+```
+
+```{r}
+st_crs(sample10)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(sample10, "../outputs/NWT10SampleFires2014.shp", driver="ESRI shapefile")
+```
+
+```{r}
+
+fire1 = data %>% dplyr::filter(POLY_HA>500000)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(fire1, "../outputs/NWT10LargeFire2014.shp", driver="ESRI shapefile")
+```
+
+```{r}
+
+fire2 = data %>% dplyr::filter(POLY_HA>50000) %>% filter(NFIREID =="295")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(fire2, "../outputs/NWTModerateFire2014.shp", driver="ESRI shapefile")
+```
+
+```{r}
+
+fire3 = data %>% dplyr::filter(between(POLY_HA, 3000, 5000)) %>% filter(NFIREID =="295")
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(fire3, "../outputs/NWTsmallFire2014.shp", driver="ESRI shapefile")
+```

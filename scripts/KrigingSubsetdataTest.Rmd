@@ -1,0 +1,385 @@
+---
+title: "Select hotspots within fire perimeters"
+author: "Anna Talucci"
+date: '2022-05-31'
+output: html_document
+---
+
+# Overview
+
+https://gis.stackexchange.com/questions/287988/kriging-example-with-sf-object
+
+https://rpubs.com/nabilabd/118172
+
+
+https://rpubs.com/nabilabd/134781
+
+https://stackoverflow.com/questions/47171710/create-a-grid-inside-a-shapefile
+
+https://stackoverflow.com/questions/64897321/cellsize-in-sfst-make-grid-seems-to-not-relate-to-map-units
+
+## Steps 
+1. Buffer perimeters by
+2. Select points within perimeters
+3. Apply kriging at 30 m resolution?
+4. Convert points to raster at 30 m resolution
+
+
+# Packages
+
+```{r}
+library(sf)
+library(sp)
+library(gstat)
+library(tidyverse)
+library(lubridate)
+library(stars)
+library(raster)
+```
+
+# Data
+
+```{r}
+fp = st_read("../data/NWTSubsetFireperimeters/NWT10SampleFires2014.shp", "NWT10SampleFires2014")
+```
+
+
+```{r}
+lrgfire = st_read("../data/NWTSubsetFireperimeters/NWTModerateFire2014.shp", "NWTModerateFire2014")
+```
+
+```{r}
+smfire = st_read("../data/NWTSubsetFireperimeters/NWTsmallFire2014.shp", "NWTsmallFire2014")
+```
+
+```{r}
+modis = st_read("../data/hotspots/DL_FIRE_M-C61_271571/fire_archive_M-C61_271571.shp", "fire_archive_M-C61_271571")
+```
+
+
+```{r}
+viirs = st_read("../data/hotspots/DL_FIRE_SV-C2_271573/fire_archive_SV-C2_271573.shp", "fire_archive_SV-C2_271573")
+```
+
+# Projections
+## View projections for shapefiles
+```{r}
+st_crs(fp)
+```
+
+```{r}
+st_crs(modis)
+```
+
+```{r}
+st_crs(viirs)
+```
+
+## Define projection variables
+
+```{r}
+projection = ("+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs" )
+```
+
+## Reproject shapefiles to equal area
+
+```{r}
+fp = st_transform(fp, projection)
+
+st_crs(fp)
+```
+
+```{r}
+smfire = st_transform(smfire, projection)
+
+st_crs(smfire)
+```
+Reproject hotspots to the same projections as the fire perimeters
+
+```{r}
+modis_proj = st_transform(modis, projection)
+
+st_crs(modis_proj)
+```
+```{r}
+modis_proj
+```
+
+```{r}
+viirs_proj = st_transform(viirs, projection)
+
+st_crs(viirs_proj)
+```
+
+
+# Processing
+
+## Buffer fire perimeters
+```{r}
+plot(st_geometry(fp), col = "red")
+```
+
+
+```{r}
+fp_buf <- st_buffer(fp, dist = 1000)
+```
+
+```{r}
+smfire_buf <- st_buffer(smfire, dist = 1000)
+```
+
+```{r}
+plot(st_geometry(viirs_proj), col="gray")
+plot(st_geometry(fp_buf), col = "red", add = TRUE)
+
+```
+
+## Select points 
+Not sure if this is the right function
+```{r}
+modis_smfire = st_intersection(modis_proj, smfire_buf)
+
+modis_smfire
+```
+
+```{r}
+plot(st_geometry(smfire_buf))
+plot(st_geometry(modis_smfire), add=TRUE)
+```
+```{r}
+viirs_smfire = st_intersection(viirs_proj, smfire_buf)
+
+viirs_smfire
+```
+
+```{r}
+plot(st_geometry(smfire_buf))
+plot(st_geometry(viirs_smfire), add=TRUE)
+```
+## Make Gird 
+
+```{r}
+grid30 <- smfire_buf %>% 
+  st_make_grid(cellsize = 30, what = "centers") %>% # grid of points
+  st_intersection(smfire_buf)   
+```
+
+```{r}
+grid500 <- smfire_buf %>% 
+  st_make_grid(cellsize = 500, what = "centers") %>% # grid of points
+  st_intersection(smfire_buf)   
+```
+
+```{r}
+grid375 <- smfire_buf %>% 
+  st_make_grid(cellsize = 375, what = "centers") %>% # grid of points
+  st_intersection(smfire_buf)   
+```
+
+```{r}
+plot(grid30)
+```
+
+
+## Add Julian date
+```{r}
+modis_pts = modis_smfire %>% mutate(julianDate = yday(ACQ_DATE))
+viirs_pts = viirs_smfire %>% mutate(julianDate = yday(ACQ_DATE))
+```
+
+```{r}
+min(modis_pts$julianDate)
+max(modis_pts$julianDate)
+```
+
+```{r}
+min(viirs_pts$julianDate)
+max(viirs_pts$julianDate)
+```
+
+## Combine MODIS and VIIRS and Run kriging
+
+```{r}
+head(modis_pts)
+```
+
+```{r}
+head(viirs_pts)
+```
+
+```{r}
+all_pts = rbind(modis_pts, viirs_pts)
+all_pts
+```
+
+
+## Fit variogram
+
+```{r}
+modis_vgm <- variogram(julianDate~1, modis_pts)
+
+class(modis_vgm)
+
+modis_fit <-
+  fit.variogram(modis_vgm, model = vgm(1,"Lin",900,1)) # fit model
+
+# vgm() list of models
+
+plot(modis_vgm, modis_fit)
+```
+
+```{r}
+viirs_vgm <- variogram(julianDate~1, viirs_pts)
+
+class(viirs_vgm)
+
+viirs_fit <-
+  fit.variogram(viirs_vgm, model = vgm(1,"Lin",900,1)) # fit model
+
+# vgm() list of models
+
+plot(viirs_vgm, viirs_fit)
+```
+
+```{r}
+allpts_vgm <- variogram(julianDate~1, all_pts)
+
+class(allpts_vgm)
+
+allpts_fit <-
+  fit.variogram(allpts_vgm, model = vgm(1,"Lin",900,1)) # fit model
+
+# vgm() list of models
+
+plot(allpts_vgm, allpts_fit)
+```
+
+## Apply Kriging
+
+```{r}
+modis_kriged <- krige((julianDate) ~ 1, modis_pts, grid500, model=modis_fit)
+```
+
+```{r}
+modis_kriged
+```
+## Rasterize sf object
+```{r}
+(x = st_rasterize(modis_kriged, st_as_stars(st_bbox(modis_kriged), values = var1.pred)))
+```
+
+```{r}
+
+plot(x, axes = TRUE)
+```
+
+```{r}
+viirs_kriged <- krige((julianDate) ~ 1, viirs_pts, grid375, model=viirs_fit)
+```
+
+```{r}
+viirs_kriged
+```
+
+```{r}
+allpts_kriged <- krige((julianDate) ~ 1, all_pts, grid375, model=allpts_fit)
+```
+
+```{r}
+allpts_kriged
+```
+
+## Plot kriged data
+
+```{r}
+ggplot(data = modis_kriged) +
+    geom_sf(aes(color = var1.pred), size = 1)
+
+```
+```{r}
+str(modis_kriged)
+```
+```{r}
+ggplot(data = viirs_kriged) +
+    geom_sf(aes(color = var1.pred), size = 1)
+
+```
+
+```{r}
+ggplot(data = allpts_kriged) +
+    geom_sf(aes(color = var1.pred), size = 1)
+
+```
+
+```{r eval=FALSE, include=FALSE}
+lzn.kriged %>% as.data.frame %>% rename(lon=coords.x1, lat=coords.x2) %>% 
+  ggplot(aes(x=lon, y=lat)) + geom_tile(aes(fill=var1.pred)) + coord_equal() +
+  scale_fill_gradient2(low="green", mid = "yellow",  high="red",midpoint = 15) +
+  theme_bw()+
+  geom_point(data=dt, aes(color=z), size=10)+
+  geom_text(data=dt, aes(label=z), color="white")
+```
+
+## Export points for GEE
+```{r}
+head(modis_pts)
+```
+
+```{r}
+modis_pts1 = modis_pts %>% dplyr::select(LATITUDE:BT_GID, julianDate, geometry)
+```
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(viirs_pts, "../outputs/VIIRSptsNWTsmallFire2014.shp", driver="ESRI shapefile")
+```
+
+```{r eval=FALSE, include=FALSE}
+
+st_write(modis_pts1, "../outputs/modispoints2014.shp", driver="ESRI shapefile")
+```
+
+
+## Convert to raster
+```{r}
+head(modis_kriged)
+```
+```{r}
+r = rasterFromXYZ(modis_kriged$map)
+plot(r)
+```
+
+ xmin: -1016420 ymin: 1406252 xmax: -984259.6 ymax: 1418012
+```{r}
+# Convert points to sp (assumes that the sf object is called example_points)
+modis_kriged_sp <- as(modis_kriged, "Spatial")
+```
+# Generate empty raster layer
+```{r}
+
+r <- raster(resolution = 1000, ext = extent(c(xmin= -1016420, ymin= 1406252, xmax= -984259.6, ymax= 1418012))) 
+```
+
+```{r}
+plot(r)
+```
+# Add projection
+```{r}
+
+crs(r) <-("+proj=aea +lat_1=50 +lat_2=70 +lat_0=40 +lon_0=-96 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs" )
+
+
+```
+# rasterize points
+```{r}
+plot(modis_kriged)
+```
+```{r}
+
+raster_modis = raster::rasterize(modis_kriged_sp, r, "var1.pred", fun=mean)
+```
+
+```{r}
+plot(modis_raster)
+
+```

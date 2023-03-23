@@ -1,0 +1,96 @@
+---
+title: "Assign FWI to DOB"
+author: "Anna Talucci"
+date: '2022-05-19'
+output: html_document
+---
+
+
+# Overview
+Working through the fire weather model to convert DOB for tweedsmuir perimeter to FWI. This is adapted from the orginal r script that was included in the data send.
+
+Day of burnratsers were provided bt Canadian  Forest Service.
+
+
+
+
+# Required Packages
+```{r eval=FALSE, include=FALSE}
+library(raster)
+library(rgdal)
+```
+
+
+# Make list of DOB ascii files
+```{r eval=FALSE, include=FALSE}
+list1<-list.files(path='.',pattern=".asc") ######### make a list of the burn date ascii files
+list1<-list1[-4] # "extra"
+```
+
+```{r, include=FALSE}
+library(sp) # spatial data
+library(rgdal) # geospatial data
+library(raster) # deals with rasters
+library(landsat) # processes landsat images
+library(rgeos) # GIS Geometry
+library(foreign) # deals with dbf files
+library(SDMTools) #Species distribution model tools for patch metrics
+library(dplyr)
+```
+
+# Tweed: DOB to FWI
+
+```{r}
+twr = raster("../data/dob/R10252_2013_dob.tif")
+
+cellStats(twr, 'min')#returns the minimum cell value -439.9731
+cellStats(twr, 'max')#returns the maximum cell value 1141.094
+
+summary(twr)
+structure(twr)
+```
+
+
+# FWI Data
+
+```{r}
+weather = read.csv("../data/weather-station-data/AllFires_dailyweather_16August2017.csv", header=TRUE, sep = ",", strip.white = TRUE)
+head(weather)
+```
+
+## DoB Data
+Selecte fire event R10252_2013 to see Day of Burn (DOB) range.
+
+```{r}
+weather %>% filter(Fire_id == "R10252_2013") %>%
+  dplyr::select(Fire_id, Burndate, fwi)
+```
+
+# Reclassify from DOB to FWI
+To reclassify the raster, first, define matrix with 3 columns - from, to, becomes. 
+
+```{r}
+m = c(255.0,255.9,22.2, 256.0,256.9,22.0, 257.0,257.9,21.3, 258.0,258.9,24.0, 259.0,259.9,28.9) 
+rclmatrix = matrix(m, ncol=3, byrow=TRUE) 
+```
+
+Then, apply the function to reclassify and write raster to save the classified raster.
+
+```{r}
+twclassfwi = reclassify(twr, rclmatrix, right = FALSE, 
+                       filename="../outputs/rasters/fwi/tw_fwi", format="GTiff",  
+                       overwrite=TRUE)
+```
+
+```{r}
+twfwi = raster("../outputs/rasters/fwi/tw_fwi.TIF")
+structure(twfwi)
+plot(twfwi)
+
+cellStats(twfwi, min)
+cellStats(twfwi, max)
+cellStats(twfwi, median)
+```
+
+
+**THE END**
